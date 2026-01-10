@@ -138,6 +138,12 @@ static void do_decode(Core* core, Simulator* sim, PipelineLatch* next_ID_EX, boo
         next_ID_EX->valid = false;
         return;
     }
+
+    Instruction* inst = &core->IF_ID.inst;
+
+    // --- FIX: Update R1 ALWAYS, even if we are about to stall ---
+    // R1 reflects the immediate of the instruction CURRENTLY in Decode
+    core->regs[1] = inst->immediate;
     
     // Check data hazard
     if (check_data_hazard(core)) {
@@ -153,17 +159,15 @@ static void do_decode(Core* core, Simulator* sim, PipelineLatch* next_ID_EX, boo
     // Move IF_ID to ID_EX
     *next_ID_EX = core->IF_ID;
     
-    Instruction* inst = &next_ID_EX->inst;
-    
-    // Update R1 with sign-extended immediate (as per spec)
-    core->regs[1] = inst->immediate;
+    // Note: 'inst' pointer is valid because it points to core->IF_ID which hasn't changed
     
     // Read register values
     next_ID_EX->rs_val = core->regs[inst->rs];
     next_ID_EX->rt_val = core->regs[inst->rt];
     next_ID_EX->rd_val = core->regs[inst->rd];
     
-    // Branch resolution in decode
+    // Branch resolution logic...
+    // (Rest of your function is fine)
     int32_t rs = next_ID_EX->rs_val;
     int32_t rt = next_ID_EX->rt_val;
     uint32_t target = next_ID_EX->rd_val & PC_MASK;
@@ -177,11 +181,9 @@ static void do_decode(Core* core, Simulator* sim, PipelineLatch* next_ID_EX, boo
         case OP_BGE: *branch_taken = (rs >= rt); break;
         case OP_JAL:
             *branch_taken = true;
-            // Store return address (next PC) in alu_result for later WB to R15
-            next_ID_EX->alu_result = core->pc;  // PC already incremented
+            next_ID_EX->alu_result = core->pc; 
             break;
         case OP_HALT:
-            // HALT - mark for later
             break;
         default:
             break;

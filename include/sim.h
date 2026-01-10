@@ -65,28 +65,26 @@
 
 // Opcodes
 typedef enum {
-    OP_ADD  = 0,    // rd = rs + rt
-    OP_SUB  = 1,    // rd = rs - rt
-    OP_AND  = 2,    // rd = rs & rt
-    OP_OR   = 3,    // rd = rs | rt
-    OP_XOR  = 4,    // rd = rs ^ rt
-    OP_MUL  = 5,    // rd = rs * rt
-    OP_SLL  = 6,    // rd = rs << rt
-    OP_SRA  = 7,    // rd = rs >> rt (arithmetic)
-    OP_SRL  = 8,    // rd = rs >> rt (logical)
-    OP_BEQ  = 9,    // if (rs == rt) pc = rd[9:0]
-    OP_BNE  = 10,   // if (rs != rt) pc = rd[9:0]
-    OP_BLT  = 11,   // if (rs < rt) pc = rd[9:0] (signed)
-    OP_BGT  = 12,   // if (rs > rt) pc = rd[9:0] (signed)
-    OP_BLE  = 13,   // if (rs <= rt) pc = rd[9:0] (signed)
-    OP_BGE  = 14,   // if (rs >= rt) pc = rd[9:0] (signed)
-    OP_JAL  = 15,   // R[15] = pc+1, pc = rd[9:0]
-    OP_LW   = 16,   // rd = MEM[rs + rt]
-    OP_SW   = 17,   // MEM[rs + rt] = rd
-    OP_RSVD = 18,   // Reserved
-    OP_IN   = 19,   // Reserved (not used in this sim)
-    OP_OUT  = 20,   // Reserved (not used in this sim)
-    OP_HALT = 21    // Stop core (opcode 21 = 0x15)
+    OP_ADD  = 0,
+    OP_SUB  = 1,
+    OP_AND  = 2,
+    OP_OR   = 3,
+    OP_XOR  = 4,
+    OP_MUL  = 5,
+    OP_SLL  = 6,
+    OP_SRA  = 7,
+    OP_SRL  = 8,
+    OP_BEQ  = 9,
+    OP_BNE  = 10,
+    OP_BLT  = 11,
+    OP_BGT  = 12,
+    OP_BLE  = 13,
+    OP_BGE  = 14,
+    OP_JAL  = 15,
+    OP_LW   = 16,
+    OP_SW   = 17,
+    // 18, 19 reserved
+    OP_HALT = 20    // CORRECTED: 20 is Halt
 } Opcode;
 
 // Decoded instruction
