@@ -1,0 +1,2 @@
+; Empty initial memory
+00000000

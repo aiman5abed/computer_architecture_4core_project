@@ -1,0 +1,58 @@
+# =============================================================================
+# .gitignore for Multi-Core MESI Simulator
+# =============================================================================
+
+# Build outputs
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+sim
+sim.exe
+
+# Build directories
+build/
+bin/
+obj/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specification PDF (optional - remove this line if you want to include it)
+*.pdf
+
+# Generated output files (simulation results)
+**/memout.txt
+**/regout*.txt
+**/core*trace.txt
+**/bustrace.txt
+**/dsram*.txt
+**/tsram*.txt
+**/stats*.txt
+
+# Keep test expected outputs
+!tests/**/memout.txt
+!tests/**/regout*.txt
+!tests/**/core*trace.txt
+!tests/**/bustrace.txt
+!tests/**/dsram*.txt
+!tests/**/tsram*.txt
+!tests/**/stats*.txt
+
+# Debug files
+*.pdb
+*.ilk
+*.log
+
+# Temporary files
+*.tmp
+*.temp

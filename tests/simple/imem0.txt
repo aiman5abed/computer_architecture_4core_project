@@ -1,0 +1,35 @@
+; =============================================================================
+; Test Program: Simple ALU Test
+; =============================================================================
+; Tests basic ALU operations and register handling
+; Expected results: R2=10, R3=5, R4=15, R5=5, R6=10, R7=50
+; =============================================================================
+
+; R2 = 10 (using immediate)
+; ADD R2, R0, R1 with immediate=10
+00210001
+0000000A
+
+; R3 = 5
+; ADD R3, R0, R1 with immediate=5
+00310001
+00000005
+
+; R4 = R2 + R3 (should be 15)
+00423000
+
+; R5 = R2 - R3 (should be 5)
+01523000
+
+; R6 = R2 AND 0xF (should be 10)
+; First put 0xF in R7 via immediate
+00710001
+0000000F
+; R6 = R2 AND R7
+02627000
+
+; R7 = R2 * R3 (should be 50)
+05723000
+
+; HALT
+14000000
