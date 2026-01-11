@@ -23,11 +23,7 @@
  * =============================================================================
  */
 
-#include "../include/sim.h"
-
-// Forward declarations for snoop handlers (defined in cache.c)
-extern void mesi_snoop_busrd(Core* core, Simulator* sim, uint32_t block_addr, int requester);
-extern void mesi_snoop_busrdx(Core* core, Simulator* sim, uint32_t block_addr, int requester);
+#include "sim.h"
 
 /* =============================================================================
  * BUS ARBITRATION
@@ -39,7 +35,7 @@ extern void mesi_snoop_busrdx(Core* core, Simulator* sim, uint32_t block_addr, i
 int bus_arbitrate(Simulator* sim) {
     Bus* bus = &sim->bus;
     
-    // Cannot grant if transaction in progress
+    // Cannot grant if transaction in progress (waiting for Flush completion)
     if (bus->arbiter.transaction_in_progress) {
         return -1;
     }
@@ -85,9 +81,9 @@ void bus_snoop(Simulator* sim, BusCommand cmd, uint32_t addr, int requester) {
  * =============================================================================
  */
 
-// Start memory response (called when BusRd/BusRdX is issued)
+// Start memory response (called when BusRd/BusRdX is granted)
 static void memory_start_response(Simulator* sim, int core_id, uint32_t block_addr, 
-                                   bool is_rdx, int data_source) {
+                                   bool is_rdx, int data_source, bool shared) {
     MemoryResponse* resp = &sim->bus.mem_response;
     
     resp->valid = true;
@@ -96,10 +92,9 @@ static void memory_start_response(Simulator* sim, int core_id, uint32_t block_ad
     resp->is_rdx = is_rdx;
     resp->data_source = data_source;
     resp->words_sent = 0;
+    resp->shared = shared;
     
     // 16 cycle delay before first word
-    // (Actually, if data comes from another cache with M, it can be faster,
-    // but per spec, we still wait 16 cycles)
     resp->cycles_remaining = MEM_RESPONSE_DELAY;
 }
 
@@ -120,7 +115,7 @@ static void memory_send_flush(Simulator* sim) {
     if (resp->data_source >= 0 && resp->data_source < NUM_CORES) {
         // Data from cache with M state
         Core* src_core = &sim->cores[resp->data_source];
-        int src_index = cache_get_index(word_addr);
+        int src_index = cache_get_index(resp->block_addr);
         int src_offset = resp->words_sent;
         data = src_core->cache.dsram[(src_index << BLOCK_OFFSET_BITS) | src_offset];
         origid = resp->data_source;
@@ -137,12 +132,13 @@ static void memory_send_flush(Simulator* sim) {
     bus->state.cmd = BUS_CMD_FLUSH;
     bus->state.origid = origid;
     bus->state.addr = word_addr;
-    bus->state.data = (uint32_t)data;
-    bus->state.shared = sim->bus.snoop_shared;
+    bus->state.data = data;
+    bus->state.shared = resp->shared;
+    bus->state.active = true;
     
     // Write data to requesting core's cache
     Core* req_core = &sim->cores[resp->requesting_core];
-    int req_index = cache_get_index(word_addr);
+    int req_index = cache_get_index(resp->block_addr);
     int req_offset = resp->words_sent;
     req_core->cache.dsram[(req_index << BLOCK_OFFSET_BITS) | req_offset] = data;
     
@@ -166,7 +162,7 @@ static void memory_send_flush(Simulator* sim) {
             }
         } else {
             // BusRd - state depends on bus_shared
-            if (bus->snoop_shared) {
+            if (resp->shared) {
                 entry->mesi = MESI_SHARED;
             } else {
                 entry->mesi = MESI_EXCLUSIVE;
@@ -199,6 +195,7 @@ void memory_cycle(Simulator* sim) {
         resp->cycles_remaining--;
         // Bus shows no activity during countdown
         sim->bus.state.cmd = BUS_CMD_NONE;
+        sim->bus.state.active = false;
         return;
     }
     
@@ -217,6 +214,7 @@ void bus_cycle(Simulator* sim) {
     // Clear bus state at start of cycle
     bus->state.cmd = BUS_CMD_NONE;
     bus->state.data = 0;
+    bus->state.active = false;
     
     // If transaction in progress (waiting for Flush), handle memory response
     if (bus->arbiter.transaction_in_progress) {
@@ -235,39 +233,34 @@ void bus_cycle(Simulator* sim) {
     BusCommand cmd = core->pending_bus_cmd;
     uint32_t addr = core->pending_bus_addr;
     
+    // Before issuing, handle eviction if needed
+    int index = cache_get_index(addr);
+    TSRAMEntry* entry = &core->cache.tsram[index];
+    if (entry->mesi == MESI_MODIFIED && entry->tag != cache_get_tag(addr)) {
+        // Need to writeback old block first
+        cache_writeback_block(core, sim, index);
+    }
+    
+    // Perform snooping BEFORE setting bus state (to get shared signal)
+    bus_snoop(sim, cmd, addr, granted);
+    
     // Issue the transaction
     bus->state.active = true;
     bus->state.cmd = cmd;
     bus->state.origid = granted;
     bus->state.addr = addr;
     bus->state.data = 0;
-    bus->state.shared = false;  // Requester clears
+    bus->state.shared = bus->snoop_shared;  // Set from snoop results
     
     // Update arbiter
     bus->arbiter.last_granted = granted;
     bus->arbiter.transaction_in_progress = true;
     
-    // Clear core's pending request flag
+    // Clear core's pending request flag (but keep waiting_for_bus true)
     core->bus_request_pending = false;
     
-    // Perform snooping
-    bus_snoop(sim, cmd, addr, granted);
-    
-    // Update bus_shared from snoop results
-    bus->state.shared = bus->snoop_shared;
-    
-    // Handle based on command
-    if (cmd == BUS_CMD_BUSRD || cmd == BUS_CMD_BUSRDX) {
-        // Check if eviction needed
-        int index = cache_get_index(addr);
-        TSRAMEntry* entry = &core->cache.tsram[index];
-        if (entry->mesi == MESI_MODIFIED && entry->tag != cache_get_tag(addr)) {
-            // Need to writeback old block first
-            cache_writeback_block(core, sim, index);
-        }
-        
-        // Start memory response
-        int data_source = bus->snoop_has_modified ? bus->snoop_modified_core : -1;
-        memory_start_response(sim, granted, addr, (cmd == BUS_CMD_BUSRDX), data_source);
-    }
+    // Start memory response
+    int data_source = bus->snoop_has_modified ? bus->snoop_modified_core : -1;
+    memory_start_response(sim, granted, addr, (cmd == BUS_CMD_BUSRDX), 
+                          data_source, bus->snoop_shared);
 }

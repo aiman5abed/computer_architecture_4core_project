@@ -3,9 +3,7 @@
  * Multi-Core Processor Simulator - Master Header File
  * =============================================================================
  * 4-Core MESI Cache Coherent Processor Simulator
- * Computer Architecture Course Project
- * 
- * CORRECTED per PDF specification checklist
+ * Cycle-accurate simulation per PDF specification
  * =============================================================================
  */
 
@@ -65,26 +63,28 @@
 
 // Opcodes
 typedef enum {
-    OP_ADD  = 0,
-    OP_SUB  = 1,
-    OP_AND  = 2,
-    OP_OR   = 3,
-    OP_XOR  = 4,
-    OP_MUL  = 5,
-    OP_SLL  = 6,
-    OP_SRA  = 7,
-    OP_SRL  = 8,
-    OP_BEQ  = 9,
-    OP_BNE  = 10,
-    OP_BLT  = 11,
-    OP_BGT  = 12,
-    OP_BLE  = 13,
-    OP_BGE  = 14,
-    OP_JAL  = 15,
-    OP_LW   = 16,
-    OP_SW   = 17,
-    // 18, 19 reserved
-    OP_HALT = 20    // CORRECTED: 20 is Halt
+    OP_ADD  = 0,    // rd = rs + rt
+    OP_SUB  = 1,    // rd = rs - rt
+    OP_AND  = 2,    // rd = rs & rt
+    OP_OR   = 3,    // rd = rs | rt
+    OP_XOR  = 4,    // rd = rs ^ rt
+    OP_MUL  = 5,    // rd = rs * rt
+    OP_SLL  = 6,    // rd = rs << rt
+    OP_SRA  = 7,    // rd = rs >> rt (arithmetic)
+    OP_SRL  = 8,    // rd = rs >> rt (logical)
+    OP_BEQ  = 9,    // if (rs == rt) pc = rd[9:0]
+    OP_BNE  = 10,   // if (rs != rt) pc = rd[9:0]
+    OP_BLT  = 11,   // if (rs < rt) pc = rd[9:0] (signed)
+    OP_BGT  = 12,   // if (rs > rt) pc = rd[9:0] (signed)
+    OP_BLE  = 13,   // if (rs <= rt) pc = rd[9:0] (signed)
+    OP_BGE  = 14,   // if (rs >= rt) pc = rd[9:0] (signed)
+    OP_JAL  = 15,   // R[15] = pc+1, pc = rd[9:0]
+    OP_LW   = 16,   // rd = MEM[rs + rt]
+    OP_SW   = 17,   // MEM[rs + rt] = rd
+    OP_RSVD = 18,   // Reserved
+    OP_IN   = 19,   // Reserved (not used in this sim)
+    OP_OUT  = 20,   // Reserved (not used in this sim)
+    OP_HALT = 21    // Stop core (opcode 21 = 0x15)
 } Opcode;
 
 // Decoded instruction
@@ -129,7 +129,7 @@ typedef struct {
 
 // Cache
 typedef struct {
-    uint32_t   dsram[CACHE_SIZE];           // 512 words
+    int32_t    dsram[CACHE_SIZE];           // 512 words (signed for proper handling)
     TSRAMEntry tsram[CACHE_NUM_BLOCKS];     // 64 entries
 } Cache;
 
@@ -142,11 +142,11 @@ typedef struct {
     bool        valid;
     uint32_t    pc;             // PC of this instruction
     Instruction inst;
-    int32_t     rs_val;
-    int32_t     rt_val;
-    int32_t     rd_val;         // For SW and branches
-    int32_t     alu_result;
-    int32_t     mem_data;
+    int32_t     rs_val;         // Value of rs register
+    int32_t     rt_val;         // Value of rt register
+    int32_t     rd_val;         // Value of rd register (for SW and branches)
+    int32_t     alu_result;     // ALU output
+    int32_t     mem_data;       // Data from memory (LW)
 } PipelineLatch;
 
 typedef struct {
@@ -155,34 +155,35 @@ typedef struct {
     // PC
     uint32_t        pc;
     
-    // Registers
+    // Registers (current state - reads return this value)
     int32_t         regs[NUM_REGISTERS];
     
     // IMEM (private)
     uint32_t        imem[IMEM_DEPTH];
     
-    // Pipeline latches
+    // Pipeline latches (current state)
     PipelineLatch   IF_ID;      // Fetch -> Decode
     PipelineLatch   ID_EX;      // Decode -> Execute
     PipelineLatch   EX_MEM;     // Execute -> Mem
     PipelineLatch   MEM_WB;     // Mem -> Writeback
-    PipelineLatch   WB_out;     // Tracks what was in WB stage (for tracing)
+    PipelineLatch   WB_completed; // Tracks what completed WB last cycle (for trace)
     
     // Cache
     Cache           cache;
     
     // Control
-    bool            halted;             // HALT completed
+    bool            halted;             // HALT executed (pipeline may still drain)
     bool            decode_stall;       // Data hazard stall
     bool            mem_stall;          // Cache miss stall
     bool            waiting_for_bus;    // Bus transaction pending
+    bool            fetch_enabled;      // Can fetch new instructions
     
     // Pending bus request
     bool            bus_request_pending;
     BusCommand      pending_bus_cmd;
     uint32_t        pending_bus_addr;   // Block-aligned
-    bool            pending_is_write;
-    int32_t         pending_write_data;
+    bool            pending_is_write;   // True if write miss
+    int32_t         pending_write_data; // Data to write after fill
     uint32_t        pending_store_addr; // Full address for store
     
     // Statistics
@@ -206,7 +207,7 @@ typedef struct {
     BusCommand  cmd;
     int         origid;         // 0-3 = core, 4 = memory
     uint32_t    addr;           // 21-bit word address
-    uint32_t    data;           // 32-bit data
+    int32_t     data;           // 32-bit data (signed for memory values)
     bool        shared;         // bus_shared signal
 } BusState;
 
@@ -218,6 +219,7 @@ typedef struct {
     int         words_sent;         // 0-7
     bool        is_rdx;
     int         data_source;        // -1=memory, 0-3=cache with M
+    bool        shared;             // Was bus_shared set during request?
 } MemoryResponse;
 
 typedef struct {
@@ -226,11 +228,11 @@ typedef struct {
 } BusArbiter;
 
 typedef struct {
-    BusState        state;
+    BusState        state;          // Current bus state
     BusArbiter      arbiter;
     MemoryResponse  mem_response;
     
-    // Snoop results
+    // Snoop results (set during arbitration)
     bool            snoop_shared;           // Any cache has the block
     bool            snoop_has_modified;     // Some cache has M state
     int             snoop_modified_core;    // Which core has M (-1 if none)
@@ -280,7 +282,6 @@ int32_t sign_extend_12(uint32_t value);
 // Pipeline
 void core_cycle(Core* core, Simulator* sim);
 bool check_data_hazard(Core* core);
-bool is_reg_written_by(PipelineLatch* latch);
 int  get_dest_reg(PipelineLatch* latch);
 
 // Cache
@@ -291,7 +292,6 @@ uint32_t cache_get_tag(uint32_t addr);
 uint32_t cache_get_block_addr(uint32_t addr);
 int  cache_get_offset(uint32_t addr);
 void cache_writeback_block(Core* core, Simulator* sim, int index);
-void cache_fill_block(Core* core, Simulator* sim, uint32_t block_addr, int source_core);
 
 // Bus
 void bus_cycle(Simulator* sim);
@@ -310,5 +310,9 @@ void trace_bus(Simulator* sim);
 bool all_cores_done(Simulator* sim);
 bool pipeline_active(Core* core);
 void run_simulation(Simulator* sim);
+
+// MESI snooping
+void mesi_snoop_busrd(Core* core, Simulator* sim, uint32_t block_addr, int requester);
+void mesi_snoop_busrdx(Core* core, Simulator* sim, uint32_t block_addr, int requester);
 
 #endif // SIM_H

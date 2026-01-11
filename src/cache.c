@@ -20,7 +20,7 @@
  * =============================================================================
  */
 
-#include "../include/sim.h"
+#include "sim.h"
 
 /* =============================================================================
  * ADDRESS DECOMPOSITION
@@ -44,7 +44,7 @@ uint32_t cache_get_tag(uint32_t addr) {
 
 // Get block-aligned address (clear offset bits)
 uint32_t cache_get_block_addr(uint32_t addr) {
-    return addr & ~0x7;  // Clear lower 3 bits
+    return addr & ~((uint32_t)0x7);  // Clear lower 3 bits
 }
 
 // DSRAM address from index and offset
@@ -57,7 +57,7 @@ static int dsram_addr(int index, int offset) {
  * =============================================================================
  */
 
-static bool cache_hit(Cache* cache, uint32_t addr) {
+static bool cache_hit_check(Cache* cache, uint32_t addr) {
     int index = cache_get_index(addr);
     uint32_t tag = cache_get_tag(addr);
     TSRAMEntry* entry = &cache->tsram[index];
@@ -68,6 +68,7 @@ static bool cache_hit(Cache* cache, uint32_t addr) {
 /* =============================================================================
  * CACHE READ
  * =============================================================================
+ * Returns true if hit (data valid), false if miss (stall required)
  */
 
 bool cache_read(Core* core, Simulator* sim, uint32_t addr, int32_t* data) {
@@ -85,15 +86,15 @@ bool cache_read(Core* core, Simulator* sim, uint32_t addr, int32_t* data) {
         return true;
     }
     
-    // Miss
-    core->read_misses++;
-    
-    // If not already waiting for bus, initiate miss handling
+    // Miss - only count miss once per request (when starting bus transaction)
     if (!core->waiting_for_bus && !core->bus_request_pending) {
+        core->read_misses++;
         uint32_t block_addr = cache_get_block_addr(addr);
         
-        // If current line is Modified, need to writeback first
-        // This will happen as part of the fill process
+        // Check if eviction needed (current line is Modified with different tag)
+        if (entry->mesi == MESI_MODIFIED && entry->tag != tag) {
+            // Writeback will happen when we get bus access
+        }
         
         // Issue BusRd
         bus_issue_request(core, BUS_CMD_BUSRD, block_addr);
@@ -105,6 +106,7 @@ bool cache_read(Core* core, Simulator* sim, uint32_t addr, int32_t* data) {
 /* =============================================================================
  * CACHE WRITE
  * =============================================================================
+ * Returns true if completed, false if stall required
  */
 
 bool cache_write(Core* core, Simulator* sim, uint32_t addr, int32_t data) {
@@ -116,31 +118,31 @@ bool cache_write(Core* core, Simulator* sim, uint32_t addr, int32_t data) {
     
     // Check hit
     if (entry->mesi != MESI_INVALID && entry->tag == tag) {
-        // Hit - but need appropriate state
+        // Hit
         if (entry->mesi == MESI_MODIFIED || entry->mesi == MESI_EXCLUSIVE) {
-            // Can write directly
+            // Can write directly, transition to M
             cache->dsram[dsram_addr(index, offset)] = data;
             entry->mesi = MESI_MODIFIED;
             core->write_hits++;
             return true;
         } else if (entry->mesi == MESI_SHARED) {
             // Need to upgrade to exclusive (BusRdX)
-            core->write_misses++;  // Counts as miss for upgrade
-            
+            // This counts as a write miss (upgrade miss)
             if (!core->waiting_for_bus && !core->bus_request_pending) {
+                core->write_misses++;
                 uint32_t block_addr = cache_get_block_addr(addr);
                 core->pending_write_data = data;
                 core->pending_store_addr = addr;
+                core->pending_is_write = true;
                 bus_issue_request(core, BUS_CMD_BUSRDX, block_addr);
             }
             return false;  // Stall
         }
     }
     
-    // Miss
-    core->write_misses++;
-    
+    // Miss - write-allocate policy, need to fetch block first
     if (!core->waiting_for_bus && !core->bus_request_pending) {
+        core->write_misses++;
         uint32_t block_addr = cache_get_block_addr(addr);
         core->pending_write_data = data;
         core->pending_store_addr = addr;
@@ -164,49 +166,12 @@ void cache_writeback_block(Core* core, Simulator* sim, int index) {
     
     // Calculate block address from tag and index
     uint32_t block_addr = (entry->tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) |
-                          (index << BLOCK_OFFSET_BITS);
+                          ((uint32_t)index << BLOCK_OFFSET_BITS);
     
     // Write all 8 words to main memory
     for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
         sim->main_memory[block_addr + i] = cache->dsram[dsram_addr(index, i)];
     }
-}
-
-/* =============================================================================
- * CACHE FILL (from memory or other cache)
- * =============================================================================
- */
-
-void cache_fill_block(Core* core, Simulator* sim, uint32_t block_addr, int source_core) {
-    Cache* cache = &core->cache;
-    int index = cache_get_index(block_addr);
-    uint32_t tag = cache_get_tag(block_addr);
-    
-    // First, writeback if current line is Modified
-    cache_writeback_block(core, sim, index);
-    
-    // Fill from source
-    if (source_core >= 0 && source_core < NUM_CORES) {
-        // Fill from another cache (M state)
-        Cache* src_cache = &sim->cores[source_core].cache;
-        int src_index = cache_get_index(block_addr);
-        
-        for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
-            int32_t word = src_cache->dsram[dsram_addr(src_index, i)];
-            cache->dsram[dsram_addr(index, i)] = word;
-            // Also update main memory
-            sim->main_memory[block_addr + i] = word;
-        }
-    } else {
-        // Fill from main memory
-        for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
-            cache->dsram[dsram_addr(index, i)] = sim->main_memory[block_addr + i];
-        }
-    }
-    
-    // Update TSRAM
-    cache->tsram[index].tag = tag;
-    // MESI state will be set by caller based on bus_shared and transaction type
 }
 
 /* =============================================================================
@@ -248,7 +213,7 @@ void mesi_snoop_busrd(Core* core, Simulator* sim, uint32_t block_addr, int reque
             // We have dirty data - we'll supply it
             sim->bus.snoop_has_modified = true;
             sim->bus.snoop_modified_core = core->core_id;
-            // Transition M -> S
+            // Transition M -> S (will happen after data transfer)
             entry->mesi = MESI_SHARED;
             break;
             

@@ -2,7 +2,8 @@
 # .gitignore for Multi-Core MESI Simulator
 # =============================================================================
 
-# Build outputs
+# Build artifacts (entire build directory)
+build/
 *.exe
 *.obj
 *.o
@@ -11,48 +12,77 @@
 *.dll
 *.so
 *.dylib
-sim
-sim.exe
+*.pdb
+*.iobj
+*.ipdb
+*.ilk
 
-# Build directories
-build/
-bin/
-obj/
+# Test outputs (generated during test runs)
+output/
 
 # IDE and editor files
 .vscode/
+.vs/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-# Project specification PDF (optional - remove this line if you want to include it)
-*.pdf
+# Visual Studio temporary files
+*.vcxproj.filters
+*.vcxproj.user
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+ipch/
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
 
-# Generated output files (simulation results)
-**/memout.txt
-**/regout*.txt
-**/core*trace.txt
-**/bustrace.txt
-**/dsram*.txt
-**/tsram*.txt
-**/stats*.txt
-
-# Keep test expected outputs
-!tests/**/memout.txt
-!tests/**/regout*.txt
-!tests/**/core*trace.txt
-!tests/**/bustrace.txt
-!tests/**/dsram*.txt
-!tests/**/tsram*.txt
-!tests/**/stats*.txt
-
-# Debug files
-*.pdb
-*.ilk
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
 
 # Temporary files
 *.tmp
 *.temp
+*.log
+*.bak
+*.cache
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Documentation builds (if using Sphinx/Doxygen)
+docs/_build/
+docs/html/
+docs/latex/
+
+# Keep these test expected outputs (git tracks them)
+!tests/**/expected/
+!tests/**/imem*.txt
+!tests/**/memin.txt
+!tests/**/*.asm

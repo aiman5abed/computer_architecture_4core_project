@@ -1,2 +1,0 @@
-; Empty IMEM - core will halt immediately with empty pipeline
-14000000

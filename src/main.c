@@ -6,7 +6,7 @@
  * =============================================================================
  */
 
-#include "../include/sim.h"
+#include "sim.h"
 
 // Global simulator
 static Simulator g_sim;
@@ -55,6 +55,7 @@ void core_init(Core* core, int id) {
     core->ID_EX.valid = false;
     core->EX_MEM.valid = false;
     core->MEM_WB.valid = false;
+    core->WB_completed.valid = false;
     
     // Cache init
     cache_init(&core->cache);
@@ -64,7 +65,18 @@ void core_init(Core* core, int id) {
     core->decode_stall = false;
     core->mem_stall = false;
     core->waiting_for_bus = false;
+    core->fetch_enabled = true;
     core->bus_request_pending = false;
+    
+    // Stats
+    core->cycle_count = 0;
+    core->instruction_count = 0;
+    core->read_hits = 0;
+    core->write_hits = 0;
+    core->read_misses = 0;
+    core->write_misses = 0;
+    core->decode_stall_cycles = 0;
+    core->mem_stall_cycles = 0;
 }
 
 void cache_init(Cache* cache) {
@@ -133,8 +145,13 @@ bool load_imem(Core* core, const char* filename) {
     char line[64];
     int addr = 0;
     while (fgets(line, sizeof(line), fp) && addr < IMEM_DEPTH) {
+        // Skip empty lines and whitespace
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\n' || *p == '\r' || *p == '\0') continue;
+        
         uint32_t inst;
-        if (sscanf(line, "%x", &inst) == 1) {
+        if (sscanf(p, "%x", &inst) == 1) {
             core->imem[addr++] = inst;
         }
     }
@@ -152,8 +169,13 @@ bool load_memin(Simulator* sim, const char* filename) {
     char line[64];
     int addr = 0;
     while (fgets(line, sizeof(line), fp) && addr < MAIN_MEM_SIZE) {
+        // Skip empty lines
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\n' || *p == '\r' || *p == '\0') continue;
+        
         uint32_t data;
-        if (sscanf(line, "%x", &data) == 1) {
+        if (sscanf(p, "%x", &data) == 1) {
             sim->main_memory[addr++] = (int32_t)data;
         }
     }
@@ -168,13 +190,13 @@ void write_memout(Simulator* sim, const char* filename) {
         return;
     }
     
-    // Find last non-zero address for full dump
+    // Find last non-zero address
     int last_addr = 0;
     for (int i = 0; i < MAIN_MEM_SIZE; i++) {
         if (sim->main_memory[i] != 0) last_addr = i;
     }
     
-    // Write full dump from 0 to last non-zero (inclusive)
+    // Write from 0 to last non-zero (inclusive)
     for (int i = 0; i <= last_addr; i++) {
         fprintf(fp, "%08X\n", (uint32_t)sim->main_memory[i]);
     }
@@ -204,7 +226,7 @@ void write_dsram(Core* core, const char* filename) {
     
     // 512 words, 8 hex digits each
     for (int i = 0; i < CACHE_SIZE; i++) {
-        fprintf(fp, "%08X\n", core->cache.dsram[i]);
+        fprintf(fp, "%08X\n", (uint32_t)core->cache.dsram[i]);
     }
     fclose(fp);
 }
@@ -216,9 +238,9 @@ void write_tsram(Core* core, const char* filename) {
         return;
     }
     
-    // 64 entries, format: (tag << 2) | mesi = 14 bits total
-    // mesi in lowest 2 bits, tag in upper bits
-    // Output as 8 hex digits for consistency
+    // 64 entries
+    // TSRAM entry format: tag(12 bits) in upper bits, MESI(2 bits) in lower bits
+    // Per spec, output as 8 hex digits for consistency
     for (int i = 0; i < CACHE_NUM_BLOCKS; i++) {
         uint32_t entry = ((core->cache.tsram[i].tag & 0xFFF) << 2) | 
                          (core->cache.tsram[i].mesi & 0x3);
@@ -249,6 +271,16 @@ void write_stats(Core* core, const char* filename) {
 /* =============================================================================
  * TRACING
  * =============================================================================
+ * 
+ * Core trace format per spec:
+ * CYCLE FETCH DECODE EXEC MEM WB R2 R3 ... R15
+ * 
+ * Pipeline stage mapping at START of cycle:
+ * - FETCH:  PC of instruction in IF_ID latch
+ * - DECODE: PC of instruction in ID_EX latch
+ * - EXEC:   PC of instruction in EX_MEM latch
+ * - MEM:    PC of instruction in MEM_WB latch
+ * - WB:     PC of instruction that completed WB in PREVIOUS cycle
  */
 
 void trace_core(Simulator* sim, int core_id) {
@@ -256,50 +288,41 @@ void trace_core(Simulator* sim, int core_id) {
     FILE* fp = sim->core_trace[core_id];
     if (!fp) return;
     
-    // Only print if at least one pipeline stage is active
-    if (!pipeline_active(core) && !core->WB_out.valid) return;
-    
-    // Format: CYCLE FETCH DECODE EXEC MEM WB R2 R3 ... R15
-    // CYCLE = decimal
-    // Stage PCs = 3 hex digits or ---
-    // Registers = values at BEGINNING of cycle (pre-state)
-    //
-    // Pipeline stage mapping at start of cycle:
-    // - IF_ID: will be decoded this cycle (shows as FETCH)
-    // - ID_EX: will execute this cycle (shows as DECODE) 
-    // - EX_MEM: will access mem this cycle (shows as EXEC)
-    // - MEM_WB: will writeback this cycle (shows as MEM)
-    // - WB_out: completed writeback last cycle (shows as WB)
+    // Only print if at least one stage is active
+    bool any_active = core->IF_ID.valid || core->ID_EX.valid || 
+                      core->EX_MEM.valid || core->MEM_WB.valid ||
+                      core->WB_completed.valid;
+    if (!any_active) return;
     
     fprintf(fp, "%llu ", (unsigned long long)sim->cycle);
     
-    // Fetch stage (what will be decoded this cycle)
+    // FETCH: instruction in IF_ID
     if (core->IF_ID.valid)
         fprintf(fp, "%03X ", core->IF_ID.pc & PC_MASK);
     else
         fprintf(fp, "--- ");
     
-    // Decode stage (what will execute this cycle)
+    // DECODE: instruction in ID_EX
     if (core->ID_EX.valid)
         fprintf(fp, "%03X ", core->ID_EX.pc & PC_MASK);
     else
         fprintf(fp, "--- ");
     
-    // Execute stage (what will access memory this cycle)
+    // EXEC: instruction in EX_MEM
     if (core->EX_MEM.valid)
         fprintf(fp, "%03X ", core->EX_MEM.pc & PC_MASK);
     else
         fprintf(fp, "--- ");
     
-    // Mem stage (what will writeback this cycle)
+    // MEM: instruction in MEM_WB
     if (core->MEM_WB.valid)
         fprintf(fp, "%03X ", core->MEM_WB.pc & PC_MASK);
     else
         fprintf(fp, "--- ");
     
-    // WB stage (what completed writeback last cycle)
-    if (core->WB_out.valid)
-        fprintf(fp, "%03X ", core->WB_out.pc & PC_MASK);
+    // WB: instruction that completed WB (tracked from previous cycle)
+    if (core->WB_completed.valid)
+        fprintf(fp, "%03X ", core->WB_completed.pc & PC_MASK);
     else
         fprintf(fp, "--- ");
     
@@ -321,19 +344,12 @@ void trace_bus(Simulator* sim) {
     if (bus->state.cmd == BUS_CMD_NONE) return;
     
     // Format: CYCLE bus_origid bus_cmd bus_addr bus_data bus_shared
-    // CYCLE = decimal
-    // origid = 1 hex digit
-    // cmd = 1 hex digit
-    // addr = 6 hex digits (21 bits)
-    // data = 8 hex digits
-    // shared = 1 hex digit
-    
     fprintf(fp, "%llu %X %X %06X %08X %X\n",
             (unsigned long long)sim->cycle,
             bus->state.origid,
             bus->state.cmd,
             bus->state.addr & 0x1FFFFF,  // 21 bits
-            bus->state.data,
+            (uint32_t)bus->state.data,
             bus->state.shared ? 1 : 0);
 }
 
@@ -344,7 +360,8 @@ void trace_bus(Simulator* sim) {
 
 bool pipeline_active(Core* core) {
     return core->IF_ID.valid || core->ID_EX.valid || 
-           core->EX_MEM.valid || core->MEM_WB.valid;
+           core->EX_MEM.valid || core->MEM_WB.valid ||
+           core->waiting_for_bus;  // Also active if waiting for bus
 }
 
 bool all_cores_done(Simulator* sim) {
@@ -355,33 +372,33 @@ bool all_cores_done(Simulator* sim) {
             return false;
         }
     }
+    // Also check if bus has pending transaction
+    if (sim->bus.arbiter.transaction_in_progress) {
+        return false;
+    }
     return true;
 }
 
 void run_simulation(Simulator* sim) {
     printf("Starting simulation...\n");
     
+    // Bootstrap: Pre-fetch first instruction for each core
+    // This ensures cycle 1 has the first instruction in IF_ID
+    for (int i = 0; i < NUM_CORES; i++) {
+        Core* core = &sim->cores[i];
+        if (core->pc < IMEM_DEPTH) {
+            core->IF_ID.valid = true;
+            core->IF_ID.pc = core->pc;
+            core->IF_ID.inst = decode_instruction(core->imem[core->pc]);
+            core->pc = (core->pc + 1) & PC_MASK;
+        }
+    }
+    
+    sim->cycle = 1;  // Start at cycle 1 per trace format
+    
     while (!all_cores_done(sim)) {
-        // 1. Trace at beginning of cycle (pre-state)
-        for (int i = 0; i < NUM_CORES; i++) {
-            trace_core(sim, i);
-        }
-        
-        // 2. Bus cycle (arbitration, snoop, memory response)
-        bus_cycle(sim);
-        
-        // 3. Trace bus
-        trace_bus(sim);
-        
-        // 4. Execute all cores
-        for (int i = 0; i < NUM_CORES; i++) {
-            core_cycle(&sim->cores[i], sim);
-        }
-        
-        // 5. Increment cycle
-        sim->cycle++;
-        
-        // Update per-core cycle counts
+        // 1. Update per-core cycle counts FIRST (before trace and execution)
+        //    Count this cycle for any core that is active (will be traced)
         for (int i = 0; i < NUM_CORES; i++) {
             Core* core = &sim->cores[i];
             if (!core->halted || pipeline_active(core)) {
@@ -389,18 +406,37 @@ void run_simulation(Simulator* sim) {
             }
         }
         
+        // 2. Trace at beginning of cycle (shows pre-state)
+        for (int i = 0; i < NUM_CORES; i++) {
+            trace_core(sim, i);
+        }
+        
+        // 3. Bus cycle (arbitration, snoop, memory response)
+        bus_cycle(sim);
+        
+        // 4. Trace bus
+        trace_bus(sim);
+        
+        // 5. Execute all cores
+        for (int i = 0; i < NUM_CORES; i++) {
+            core_cycle(&sim->cores[i], sim);
+        }
+        
+        // 6. Increment global cycle
+        sim->cycle++;
+        
         // Safety limit
-        if (sim->cycle > 100000000) {
-            fprintf(stderr, "Error: Exceeded 100M cycles\n");
+        if (sim->cycle > 1000000) {
+            fprintf(stderr, "Error: Exceeded 1M cycles\n");
             break;
         }
     }
     
-    printf("Simulation complete. Total cycles: %llu\n", (unsigned long long)sim->cycle);
+    printf("Simulation complete. Total cycles: %llu\n", (unsigned long long)(sim->cycle - 1));
 }
 
 /* =============================================================================
- * COMMAND LINE PARSING
+ * COMMAND LINE PARSING AND MAIN
  * =============================================================================
  */
 
@@ -466,6 +502,13 @@ int main(int argc, char* argv[]) {
     if (g_sim.bus_trace) {
         fclose(g_sim.bus_trace);
         g_sim.bus_trace = NULL;
+    }
+    
+    // Flush all dirty cache lines to main memory before writing memout
+    for (int c = 0; c < NUM_CORES; c++) {
+        for (int line = 0; line < CACHE_NUM_BLOCKS; line++) {
+            cache_writeback_block(&g_sim.cores[c], &g_sim, line);
+        }
     }
     
     // Write output files
