@@ -9,7 +9,7 @@
 #define OP_BNE  0x0A  // Using BNE (10) instead of BLT (11)
 #define OP_LW   0x10
 #define OP_SW   0x11
-#define OP_HALT 0x15
+#define OP_HALT 0x14
 
 // Registers
 #define R0 0
