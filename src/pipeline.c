@@ -350,6 +350,8 @@ void core_cycle(Core* core, Simulator* sim) {
     inst_completed = do_writeback(core);
     if (inst_completed) {
         core->instruction_count++;
+        // Prevent re-committing the same instruction if MEM stage stalls.
+        core->MEM_WB.valid = false;
     }
     
     // MEM: may stall on cache miss
