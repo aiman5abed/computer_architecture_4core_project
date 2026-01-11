@@ -83,8 +83,8 @@ typedef enum {
     OP_SW   = 17,   // MEM[rs + rt] = rd
     OP_RSVD = 18,   // Reserved
     OP_IN   = 19,   // Reserved (not used in this sim)
-    OP_OUT  = 20,   // Reserved (not used in this sim)
-    OP_HALT = 21    // Stop core (opcode 21 = 0x15)
+    OP_OUT  = 21,   // Reserved (not used in this sim)
+    OP_HALT = 20    // Stop core (opcode 20 = 0x14)
 } Opcode;
 
 // Decoded instruction
